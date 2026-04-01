@@ -112,3 +112,6 @@ spec:
 ### Conclusion
 
 By shifting to MCOA and leveraging standard `ScrapeConfig` APIs, platform teams can safely and efficiently federate user workload metrics across massive fleets. Integrating this pipeline with Kiali transforms isolated islands of data into a unified, single pane of glass, giving your teams the end-to-end visibility required to operate a resilient hybrid cloud architecture.
+
+
+ref:  https://kiali.io/docs/configuration/multi-cluster/acm-observability/
