@@ -1,22 +1,22 @@
 # Mastering User Workload Monitoring with MCOA: A Multi-Cluster Kiali Example
 
-The introduction of the MultiCluster Observability Addon (MCOA) in Red Hat Advanced Cluster Management (RHACM) represents a massive architectural leap for managing telemetry across hybrid cloud fleets. By replacing legacy custom components with established upstream standards like the Prometheus Agent, MCOA delivers a highly scalable, GitOps-friendly monitoring engine.
+The introduction of the MultiCluster Observability Addon (MCOA) in Red Hat Advanced Cluster Management (RHACM) represents a massive architectural leap for managing telemetry across hybrid cloud fleets. By replacing legacy custom components with established upstream standards like the Prometheus Agent, MCOA delivers a highly scalable, GitOps-friendly monitoring engine. 
 
-While MCOA automatically collects standard platform metrics for cluster health, monitoring your actual applications requires configuring User Workload Monitoring (UWM). To demonstrate the true power of this architecture, let's explore how to configure UWM with MCOA using a real-world, high-value use case: observing a multi-cluster Istio Service Mesh with Kiali.
+While MCOA automatically collects standard platform metrics for cluster health, monitoring your actual applications requires configuring **User Workload Monitoring (UWM)**. To demonstrate the true power of this architecture, let's explore how to configure UWM with MCOA using a real-world, high-value use case: **observing a multi-cluster Istio Service Mesh with Kiali.**
 
 ---
 
-## The Challenge: Multi-Cluster Service Mesh Blind Spots
+### The Challenge: Multi-Cluster Service Mesh Blind Spots
 
-Scaling a service mesh from one cluster to many multiplies your observability blind spots. Tracking a transaction as it crosses cluster boundaries turns debugging into a time-consuming detective hunt.
+Scaling a service mesh from one cluster to many multiplies your observability blind spots. Tracking a transaction as it crosses cluster boundaries turns debugging into a time-consuming detective hunt. 
 
-Kiali solves this by providing a single management console and network graph over your entire multi-cluster service mesh. However, for Kiali to present an end-to-end visualization, it needs a unified metrics store—it cannot query dozens of isolated clusters simultaneously.
+Kiali solves this by providing a single management console and network graph over your entire multi-cluster service mesh. However, for Kiali to present an end-to-end visualization, it needs a unified metrics store—it cannot query dozens of isolated clusters simultaneously. 
 
 By combining OpenShift's UWM, RHACM's MCOA, and Kiali, we can aggregate mesh telemetry centrally on the hub cluster and visualize fleet-wide traffic seamlessly.
 
 ---
 
-## Step 1: Enable User Workload Monitoring in MCOA
+### Step 1: Enable User Workload Monitoring in MCOA
 
 First, we must instruct MCOA to deploy the necessary user workload agents across the fleet. You do this by editing the `MultiClusterObservability` custom resource (CR) on your hub cluster to enable user workload collection.
 
@@ -31,3 +31,91 @@ spec:
       metrics: 
         collection: 
           enabled: true # Enables the UWM Prometheus Agents
+```
+*Note: UWM must also be enabled locally on your spoke clusters via the `cluster-monitoring-config` ConfigMap.*
+
+
+### Step 2: Instrument the Istio Data Plane
+
+Next, we need the local cluster to scrape metrics from the mesh. Istio data plane components (like sidecars, ambient ztunnels, and waypoint proxies) expose their metrics at `/stats/prometheus` on port `15020`. 
+
+You must deploy a `PodMonitor` or `ServiceMonitor` in the namespaces where your mesh workloads run so the local OpenShift UWM Prometheus instance scrapes these endpoints. 
+
+
+### Step 3: Tell MCOA to Federate the Mesh Metrics
+
+Under the legacy RHACM architecture, you would add these metrics to an `observability-metrics-custom-allowlist` ConfigMap. With MCOA, we use native Kubernetes APIs. We define what telemetry to extract using a `ScrapeConfig` resource.
+
+To tell MCOA to ship our Istio metrics to the hub, create a `ScrapeConfig` on the hub cluster, ensuring you apply the specific label **`app.kubernetes.io/component: user-workload-metrics-collector`**.
+
+```yaml
+apiVersion: monitoring.rhobs/v1alpha1 
+kind: ScrapeConfig 
+metadata: 
+  name: kiali-istio-metrics 
+  namespace: open-cluster-management-observability 
+  labels: 
+    app.kubernetes.io/component: user-workload-metrics-collector 
+spec: 
+  jobName: istio-mesh-federation 
+  metricsPath: /federate 
+  params: 
+    match[]: 
+    - '{__name__=~"istio_requests_total|istio_request_duration_milliseconds_bucket"}'
+```
+
+Once created, you must add a reference to this `ScrapeConfig` in the `ClusterManagementAddOn` placements list so MCOA knows which managed clusters should receive this configuration.
+
+---
+
+### Step 4: Configure Kiali to Query the Hub
+
+With MCOA actively pushing Istio metrics to the hub cluster's central Thanos storage, we can now configure Kiali. 
+
+While Kiali can be deployed on the hub or a spoke cluster, it must be configured to query the hub's external **Observatorium API** (the secure gateway to Thanos). 
+
+Because the Observatorium API is secured with mutual TLS (mTLS), you need to extract the client certificates automatically generated by ACM (typically found in the `observability-grafana-certs` secret) and mount them to your Kiali pod. 
+
+Once mounted, configure Kiali to use the Observatorium API endpoint:
+
+```yaml
+apiVersion: kiali.io/v1alpha1
+kind: Kiali
+spec:
+  external_services:
+    prometheus:
+      auth:
+        type: bearer
+        use_kiali_token: true
+      url: "https://observatorium-api-open-cluster-management-observability.apps.<hub-domain>/api/metrics/v1/default"
+```
+
+
+### Step 5: The "Gotcha" — Thanos Proxy and Scrape Intervals
+
+There is a critical configuration detail when integrating Kiali with ACM's Thanos backend. 
+
+ACM collects metrics from each cluster's Prometheus and pushes them to the hub every **5 minutes** by default. Because Thanos does not expose Prometheus's native configuration endpoints, Kiali cannot automatically discover this interval. 
+
+If Kiali's internal `scrape_interval` setting defaults to something too low (like `30s`), Kiali's PromQL `rate()` calculations will fail to find enough data points, resulting in **empty charts and graphs** even when data exists in Thanos.
+
+To fix this, you **must** enable the `thanos_proxy` setting in your Kiali CR and explicitly set the `scrape_interval` to match ACM's `5m` collection interval:
+
+```yaml
+spec:
+  external_services:
+    prometheus:
+      thanos_proxy:
+        enabled: true
+      query_scope:
+        cluster: "my-mesh-cluster" # Filters data for this specific Kiali instance
+      custom_metrics_url: "https://..."
+      # CRITICAL: Must match the MCOA push interval
+      scrape_interval: "5m" 
+```
+
+*Note: Because of this 5-minute push interval, you should expect a 10-minute "warm-up" period for new deployments before lines appear on Kiali's graphs, as Kiali requires at least two data points to calculate traffic rates.*
+
+### Conclusion
+
+By shifting to MCOA and leveraging standard `ScrapeConfig` APIs, platform teams can safely and efficiently federate user workload metrics across massive fleets. Integrating this pipeline with Kiali transforms isolated islands of data into a unified, single pane of glass, giving your teams the end-to-end visibility required to operate a resilient hybrid cloud architecture.
