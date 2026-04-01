@@ -4,8 +4,6 @@ The introduction of the MultiCluster Observability Addon (MCOA) in Red Hat Advan
 
 While MCOA automatically collects standard platform metrics for cluster health, monitoring your actual applications requires configuring **User Workload Monitoring (UWM)**. To demonstrate the true power of this architecture, let's explore how to configure UWM with MCOA using a real-world, high-value use case: **observing a multi-cluster Istio Service Mesh with Kiali.**
 
----
-
 ### The Challenge: Multi-Cluster Service Mesh Blind Spots
 
 Scaling a service mesh from one cluster to many multiplies your observability blind spots. Tracking a transaction as it crosses cluster boundaries turns debugging into a time-consuming detective hunt. 
@@ -13,8 +11,6 @@ Scaling a service mesh from one cluster to many multiplies your observability bl
 Kiali solves this by providing a single management console and network graph over your entire multi-cluster service mesh. However, for Kiali to present an end-to-end visualization, it needs a unified metrics store—it cannot query dozens of isolated clusters simultaneously. 
 
 By combining OpenShift's UWM, RHACM's MCOA, and Kiali, we can aggregate mesh telemetry centrally on the hub cluster and visualize fleet-wide traffic seamlessly.
-
----
 
 ### Step 1: Enable User Workload Monitoring in MCOA
 
@@ -66,8 +62,6 @@ spec:
 
 Once created, you must add a reference to this `ScrapeConfig` in the `ClusterManagementAddOn` placements list so MCOA knows which managed clusters should receive this configuration.
 
----
-
 ### Step 4: Configure Kiali to Query the Hub
 
 With MCOA actively pushing Istio metrics to the hub cluster's central Thanos storage, we can now configure Kiali. 
@@ -89,7 +83,6 @@ spec:
         use_kiali_token: true
       url: "https://observatorium-api-open-cluster-management-observability.apps.<hub-domain>/api/metrics/v1/default"
 ```
-
 
 ### Step 5: The "Gotcha" — Thanos Proxy and Scrape Intervals
 
